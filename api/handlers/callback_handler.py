@@ -1,95 +1,80 @@
-import telegram
 import json
+from api.handlers.document_handler import handle_document
+from api.handlers.merge_handler import handle_merge
+from api.handlers.split_handler import handle_split
+from api.handlers.encrypt_handler import handle_encrypt
+from api.handlers.decrypt_handler import handle_decrypt
+from api.handlers.image_to_pdf_handler import handle_image_to_pdf
 
-async def handle_callback_query(bot: telegram.Bot, update: telegram.Update, db=None):
-    """معالج استجابات الأزرار (Callback Queries)"""
-    callback_query = update.callback_query
-    user = callback_query.from_user
-    chat_id = callback_query.message.chat_id
-    callback_data = callback_query.data
-    
-    print(f"معالجة استجابة زر من المستخدم {user.id}. البيانات: {callback_data}")
-    
+# قاموس يربط الأوامر بمعالجاتها
+COMMAND_HANDLERS = {
+    'merge': handle_merge,
+    'split': handle_split,
+    'encrypt': handle_encrypt,
+    'decrypt': handle_decrypt,
+    'img2pdf': handle_image_to_pdf,
+    # أضف المزيد من الأوامر هنا
+}
+
+def handle_callback(update):
+    """
+    معالج الاستدعاء الرئيسي للبوت
+    """
     try:
-        # تحليل نوع الاستجابة
-        if callback_data.startswith("split_"):
-            # استجابة لطلب تقسيم PDF
-            file_id = callback_data.replace("split_", "")
-            
-            # إرسال خيارات التقسيم
-            await bot.send_message(
-                chat_id=chat_id,
-                text="الرجاء اختيار طريقة تقسيم ملف PDF:",
-                reply_markup=telegram.InlineKeyboardMarkup([
-                    [telegram.InlineKeyboardButton("تقسيم كل صفحة في ملف منفصل", callback_data=f"split_each_{file_id}")],
-                    [telegram.InlineKeyboardButton("تقسيم حسب نطاق الصفحات", callback_data=f"split_range_{file_id}")],
-                    [telegram.InlineKeyboardButton("تقسيم إلى أجزاء متساوية", callback_data=f"split_equal_{file_id}")]
-                ])
-            )
-            
-            # تحديث حالة المستخدم في قاعدة البيانات
-            if db:
-                db.users.update_one(
-                    {"user_id": user.id},
-                    {"$set": {"state": "splitting_pdf", "current_file_id": file_id}}
-                )
+        print(f"Processing update: {json.dumps(update, indent=2)}")
         
-        elif callback_data.startswith("merge_"):
-            # استجابة لطلب دمج PDF
-            file_id = callback_data.replace("merge_", "")
+        # تحقق من وجود الرسالة في التحديث
+        if 'message' not in update:
+            print("No message in update")
+            return None
+        
+        message = update['message']
+        
+        # تحقق من وجود النص في الرسالة
+        if 'text' in message:
+            text = message['text']
+            print(f"Received text: {text}")
             
-            await bot.send_message(
-                chat_id=chat_id,
-                text="تم إضافة الملف إلى قائمة الدمج. الرجاء إرسال ملف PDF آخر للدمج معه، أو أرسل /done لإتمام عملية الدمج."
-            )
-            
-            # تحديث حالة المستخدم في قاعدة البيانات
-            if db:
-                db.users.update_one(
-                    {"user_id": user.id},
-                    {
-                        "$set": {"state": "waiting_for_pdfs_to_merge"},
-                        "$push": {"merge_files": file_id}
+            # تحقق من أن النص يبدأ بـ '/'
+            if text.startswith('/'):
+                # استخراج الأمر
+                command = text.split(' ')[0][1:]
+                print(f"Extracted command: {command}")
+                
+                # التحقق من وجود معالج للأمر
+                if command in COMMAND_HANDLERS:
+                    print(f"Calling handler for command: {command}")
+                    return COMMAND_HANDLERS[command](update)
+                else:
+                    print(f"No handler for command: {command}")
+                    print(f"Available commands: {list(COMMAND_HANDLERS.keys())}")
+                    # إرسال رسالة بالأوامر المتاحة
+                    return {
+                        'method': 'sendMessage',
+                        'chat_id': message['chat']['id'],
+                        'text': f"الأمر غير معروف. الأوامر المتاحة هي: {', '.join(['/' + cmd for cmd in COMMAND_HANDLERS.keys()])}"
                     }
-                )
         
-        elif callback_data.startswith("encrypt_"):
-            # استجابة لطلب تشفير PDF
-            file_id = callback_data.replace("encrypt_", "")
+        # تحقق من وجود مستند في الرسالة
+        if 'document' in message:
+            print("Document received, handling document")
+            return handle_document(update)
             
-            await bot.send_message(
-                chat_id=chat_id,
-                text="الرجاء إدخال كلمة المرور التي تريد استخدامها لتشفير ملف PDF:"
-            )
+        # إذا لم يتم التعرف على نوع الرسالة
+        print("Message type not recognized")
+        return {
+            'method': 'sendMessage',
+            'chat_id': message['chat']['id'],
+            'text': "أرسل أمرًا (مثل /merge أو /split) أو قم بإرسال ملف PDF."
+        }
             
-            # تحديث حالة المستخدم في قاعدة البيانات
-            if db:
-                db.users.update_one(
-                    {"user_id": user.id},
-                    {"$set": {"state": "waiting_for_encrypt_password", "current_file_id": file_id}}
-                )
-        
-        elif callback_data.startswith("decrypt_"):
-            # استجابة لطلب فك تشفير PDF
-            file_id = callback_data.replace("decrypt_", "")
-            
-            await bot.send_message(
-                chat_id=chat_id,
-                text="الرجاء إدخال كلمة المرور لفك تشفير ملف PDF:"
-            )
-            
-            # تحديث حالة المستخدم في قاعدة البيانات
-            if db:
-                db.users.update_one(
-                    {"user_id": user.id},
-                    {"$set": {"state": "waiting_for_decrypt_password", "current_file_id": file_id}}
-                )
-        
-        # إضافة المزيد من معالجات الاستجابة حسب الحاجة
-        
-        # إنهاء الاستجابة
-        await callback_query.answer()
-    
     except Exception as e:
-        print(f"خطأ في معالجة استجابة الزر: {e}")
-        await callback_query.answer("حدث خطأ أثناء معالجة طلبك. الرجاء المحاولة مرة أخرى.")
+        print(f"Error in handle_callback: {str(e)}")
+        # في حالة حدوث خطأ، أرسل رسالة خطأ
+        if 'message' in update and 'chat' in update['message']:
+            return {
+                'method': 'sendMessage',
+                'chat_id': update['message']['chat']['id'],
+                'text': f"حدث خطأ أثناء معالجة طلبك: {str(e)}"
+            }
+        return None
